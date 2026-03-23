@@ -1,0 +1,5 @@
+{
+  "name": "Biblicando",
+  "description": "Aplicativo gamificado de aprendizado bíblico",
+  "requestFramePermissions": ["microphone"]
+}

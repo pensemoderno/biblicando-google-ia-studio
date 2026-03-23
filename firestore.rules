@@ -1,0 +1,166 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId} (matches Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required, immutable) - The user's UID
+    //   - email: string (required, immutable) - The user's email
+    //   - displayName: string (optional) - The user's display name
+    //   - photoURL: string (optional) - The user's profile picture URL
+    //   - xp: number (required) - Total experience points
+    //   - streak: number (required) - Current daily streak
+    //   - hearts: number (required) - Current number of lives
+    //   - plan: string (required) - Subscription plan ('free' or 'pro')
+    //   - skipsLeft: number (optional) - Number of skips left for the day
+    //   - role: string (required, immutable for non-admins) - User role ('user' or 'admin')
+    //   - createdAt: timestamp (required, immutable) - Account creation time
+    //   - lastActiveAt: timestamp (optional) - Last active time
+    //
+    // Collection: users/{userId}/progress
+    // Document ID: {progressId}
+    // Fields:
+    //   - userId: string (required, immutable) - The user's UID
+    //   - lessonId: string (required, immutable) - The lesson ID
+    //   - completed: boolean (required) - Whether the lesson is completed
+    //   - score: number (optional) - The score achieved
+    //   - completedAt: timestamp (optional) - Completion time
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        (request.auth.token.email == "rafaelaraujosjdr@gmail.com" && request.auth.token.email_verified == true));
+    }
+    
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function isValidStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+    
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+    
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+    
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'email', 'xp', 'streak', 'hearts', 'plan', 'role', 'createdAt']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && isValidEmail(data.email) &&
+             isValidOptionalString('displayName', 1, 100) &&
+             (!( 'photoURL' in data ) || isValidUrl(data.photoURL)) &&
+             data.xp is number && data.xp >= 0 &&
+             data.streak is number && data.streak >= 0 &&
+             data.hearts is number && data.hearts >= 0 &&
+             data.plan in ['free', 'pro'] &&
+             (!( 'skipsLeft' in data ) || (data.skipsLeft is number && data.skipsLeft >= 0)) &&
+             data.role in ['user', 'admin'] &&
+             data.createdAt is timestamp &&
+             (!( 'lastActiveAt' in data ) || data.lastActiveAt is timestamp);
+    }
+    
+    function isValidProgress(data) {
+      return hasRequiredFields(['userId', 'lessonId', 'completed']) &&
+             data.userId is string && data.userId.size() > 0 &&
+             data.lessonId is string && data.lessonId.size() > 0 &&
+             data.completed is bool &&
+             (!( 'score' in data ) || (data.score is number && data.score >= 0)) &&
+             (!( 'completedAt' in data ) || data.completedAt is timestamp);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    // Test connection document
+    match /test/connection {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /users/{userId} {
+      // Users can read their own profile, admins can read all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Users can create their own profile, but cannot assign themselves as admin unless they are the default admin
+      allow create: if isOwner(userId) && 
+                       isValidUser(request.resource.data) && 
+                       uidUnchanged() &&
+                       ((request.resource.data.role == 'user') || isAdmin());
+                       
+      // Users can update their own profile, but cannot change immutable fields or elevate privileges
+      allow update: if (isOwner(userId) && 
+                       isValidUser(request.resource.data) && 
+                       uidNotModified() &&
+                       areImmutableFieldsUnchanged(['uid', 'email', 'createdAt', 'role'])) || 
+                       (isAdmin() && isValidUser(request.resource.data));
+                       
+      allow delete: if isAdmin();
+      
+      match /progress/{progressId} {
+        allow read: if isOwner(userId) || isAdmin();
+        
+        allow create: if isOwner(userId) && 
+                         isValidProgress(request.resource.data) &&
+                         request.resource.data.userId == userId;
+                         
+        allow update: if isOwner(userId) && 
+                         isValidProgress(request.resource.data) &&
+                         areImmutableFieldsUnchanged(['userId', 'lessonId']) ||
+                         (isAdmin() && isValidProgress(request.resource.data));
+                         
+        allow delete: if isAdmin();
+      }
+    }
+  }
+}

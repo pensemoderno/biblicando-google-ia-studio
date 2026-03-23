@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-nunito), ui-sans-serif, system-ui, sans-serif;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 1rem);
+  }
+  
+  @keyframes heart-pulse-color {
+    0%, 100% { color: #FF4B4B; }
+    10%, 30% { color: #991B1B; }
+  }
+  
+  .heart-pulse-color {
+    animation: heart-pulse-color 1.5s ease-in-out infinite;
+  }
+}
